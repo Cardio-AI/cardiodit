@@ -1,0 +1,59 @@
+# Outputs (model checkpoints, logs, generated files)
+outputs/
+
+# Data
+/data/
+
+# W&B
+wandb/
+
+# Docs / assets not for repo
+architecture_discussion.md
+cardiodit.pdf
+
+# Data splits
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# ML / large files
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+*.npy
+*.npz
+*.h5
+*.hdf5
+
+# Env
+.env
+*.env
+.venv/
+venv/
+env/
+
+# IDE / tooling
+.vscode/
+.idea/
+.claude/
+.agents/
+.codex/
+
+# OS
+.DS_Store
+Thumbs.db

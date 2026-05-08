@@ -1,0 +1,27 @@
+name: cardiodit
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.1
+  - numpy
+  - pandas
+  - scipy
+  - pyyaml
+  - nibabel
+  - tqdm
+  - tensorboard
+  - pip:
+      - monai
+      - monai-generative
+      - omegaconf
+      - einops
+      - timm
+      - xformers
+      - lpips
+      - wandb

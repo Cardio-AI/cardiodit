@@ -1,0 +1,42 @@
+# CardioDiT-L
+
+model:
+  params:
+    input_size: [10, 28, 28, 8]
+    patch_size: [1, 4, 4, 2]
+    in_channels: 8
+    hidden_size: 1024
+    depth: 16
+    num_heads: 16
+    mlp_ratio: 4.0
+    class_dropout_prob: 0.0
+    num_classes: 0
+    learn_sigma: false
+    flash_attention: true
+
+scheduler:
+  schedule: "cosine"
+  num_train_timesteps: 300
+  prediction_type: "v_prediction"
+
+training:
+  n_epochs: 3000
+  eval_freq: 10
+  batch_size: 2
+  num_workers: 8
+  scale_factor: 1.0
+  preload_latents: true
+  use_ema: true
+  ema_decay: 0.9999
+  grad_accum_steps: 1
+
+optim:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 100
+  min_lr_ratio: 0.01
+
+wandb:
+  entity: null
+  project: cardiodit
+  offline: false
