@@ -1,54 +1,19 @@
-# VQ-GAN - asymmetric: 8x spatial (H, W), 4x temporal (T)
-#
-# Three encoder/decoder stages.
-# Stages 1-2: stride 2 on all dims (H, W, T).
-# Stage 3:    stride 2 on H and W only; T preserved.
-#
-# Compression:
-#   H:  224 -> 112 -> 56 -> 28    (8x)
-#   W:  224 -> 112 -> 56 -> 28    (8x)
-#   T:   32 ->  16 ->  8 ->  8    (4x)
-#
-# Latent per 2D+t slice: (8, 28, 28, 8)
-# Full 4D latent (D=10): (8, 10, 28, 28, 8)
-#
-# This is the default CardioDiT Stage-1 setting used by the Stage-2 configs.
-#
-# Stage 3 asymmetric convolution parameters (list form for MONAI VQVAE):
-#   downsample: [stride, kernel, dilation, padding]
-#     stride  = [2, 2, 1]   - stride 2 on H/W, no stride on T
-#     kernel  = [4, 4, 1]   - 4x4 spatial kernel, point kernel on T
-#     dilation = 1
-#     padding = [1, 1, 0]   - maintain spatial dims; no T padding needed
-#
-#   upsample: [stride, kernel, dilation, padding, output_padding]
-#     stride        = [2, 2, 1]
-#     kernel        = [4, 4, 1]
-#     dilation      = 1
-#     padding       = [1, 1, 0]
-#     output_padding = [0, 0, 0]
-
-model:
+stage1:
+  base_lr: 0.00005
+  disc_lr: 0.00002
+  perceptual_weight: 0.002
+  adv_weight: 0.005
   params:
     spatial_dims: 3
     in_channels: 1
     out_channels: 1
-    num_channels: [128, 256, 256]
-    num_res_channels: [128, 256, 256]
+    num_channels: [128,256]
+    num_res_channels: [256,256]
     num_res_layers: 2
-    downsample_parameters:
-      - [2, 4, 1, 1]                    # stage 1: stride 2 on H, W, T
-      - [2, 4, 1, 1]                    # stage 2: stride 2 on H, W, T
-      - [[2, 2, 1], [4, 4, 1], 1, [1, 1, 0]]   # stage 3: stride 2 on H, W only
-    upsample_parameters:
-      - [[2, 2, 1], [4, 4, 1], 1, [1, 1, 0], [0, 0, 0]]  # reverses stage 3
-      - [2, 4, 1, 1, 0]                 # reverses stage 2
-      - [2, 4, 1, 1, 0]                 # reverses stage 1
-    num_embeddings: 4096
+    downsample_parameters: [[2, 4, 1, 1], [2, 4, 1, 1]]
+    upsample_parameters: [[2, 4, 1, 1, 0], [2, 4, 1, 1, 0]]
+    num_embeddings: 16384
     embedding_dim: 8
-    commitment_cost: 0.25
-    decay: 0.99
-    epsilon: 1e-5
 
 discriminator:
   params:
@@ -57,33 +22,9 @@ discriminator:
     num_layers_d: 3
     in_channels: 1
     out_channels: 1
-    norm: "INSTANCE"
+    kernel_size: 3
 
-training:
-  n_epochs: 500
-  eval_freq: 10
-  batch_size: 4
-  num_workers: 8
-  base_lr: 5.0e-5
-  disc_lr: 5.0e-5
-  lr_gamma: 0.9999
-  roi_size: [224, 224, 32]   # (H, W, T) per 2D+t slice
-  target_frames: 32
-  use_persistent: true
-
-losses:
-  perceptual_weight: 0.2
-  jukebox_weight: 0.2
-  adv_weight: 0.09
-  adv_warmup: 0
+perceptual_network:
   params:
-    perceptual_params:
-      spatial_dims: 3
-      network_type: "squeeze"
-    jukebox_params:
-      spatial_dims: 3
-
-wandb:
-  entity: null         # set your W&B username here, or use WANDB_ENTITY env var
-  project: cardiodit-dev
-  offline: false       # set true on cluster nodes without internet
+    spatial_dims: 3
+    network_type: "squeeze"

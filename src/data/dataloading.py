@@ -46,7 +46,7 @@ class RandomZSliced(MapTransform, Randomizable):
     """
     Randomly sample one z-slice from a 4D CMR volume.
 
-    Expects input shape (T, H, W, D) — MONAI loads NIfTI short-axis CMR as
+    Expects input shape (T, H, W, D) - MONAI loads NIfTI short-axis CMR as
     (H, W, D, T) and EnsureChannelFirst moves T to the front as the channel dim.
     Returns shape (1, H, W, T), ready for the VQ-GAN.
 
@@ -81,7 +81,7 @@ class PermuteDimensionsd(MapTransform):
     identity permutation ``(0, 1, 2, 3, 4)`` leaves the order unchanged.
     Adapt ``perm`` to match your data's on-disk axis ordering.
 
-    Example — reorder from (C, T, H, W, D) to (C, H, W, D, T):
+    Example - reorder from (C, T, H, W, D) to (C, H, W, D, T):
         PermuteDimensionsd(keys=["image"], perm=(0, 2, 3, 4, 1))
     """
 
@@ -218,36 +218,36 @@ def get_vqgan_dataloader(
     Input CSV must point to full 4D NIfTI volumes (H, W, D, T). MONAI loads
     them as (1, H, W, D, T). ``RandomZSliced`` then draws one random z-slice
     per sample to produce (1, H, W, T) for the VQ-GAN. The VQ-GAN is
-    z-position-agnostic by design — it is a universal 2D+t codec; all 4D
+    z-position-agnostic by design - it is a universal 2D+t codec; all 4D
     spatial relations are the DiT's responsibility.
     """
     train_files = get_datalist(training_ids)
     val_files = get_datalist(validation_ids)
 
-    # Deterministic transforms — cached to disk by PersistentDataset (or RAM by
+    # Deterministic transforms - cached to disk by PersistentDataset (or RAM by
     # CacheDataset). Operate on the full (T, H, W, D) volume. CenterSpatialCropd
     # and SpatialPadd use -1 for the D axis so z-slices are left untouched.
     roi_xy = (roi_size[0], roi_size[1], -1)
     det_transforms = Compose([
         LoadImaged(keys=["image"]),
-        EnsureChannelFirstd(keys=["image"]),                                   # → (T, H, W, D)
+        EnsureChannelFirstd(keys=["image"]),                                   # -> (T, H, W, D)
         ScaleIntensityd(keys=["image"], minv=-1.0, maxv=1.0),
-        CyclicPadTimed(keys=["image"], target_frames=target_frames, dim=0),    # → (target_frames, H, W, D)
-        CenterSpatialCropd(keys=["image"], roi_size=roi_xy),                   # → (target_frames, roi_h, roi_w, D)
+        CyclicPadTimed(keys=["image"], target_frames=target_frames, dim=0),    # -> (target_frames, H, W, D)
+        CenterSpatialCropd(keys=["image"], roi_size=roi_xy),                   # -> (target_frames, roi_h, roi_w, D)
         SpatialPadd(keys=["image"], spatial_size=roi_xy,constant_values=-1.0),
     ])
 
-    # Random transforms — re-applied on every __getitem__. PersistentDataset
+    # Random transforms - re-applied on every __getitem__. PersistentDataset
     # recognises RandomZSliced as Randomizable and splits the pipeline here.
     train_rand_transforms = Compose([
-        RandomZSliced(keys=["image"]),                     # (T, H, W, D) → (1, H, W, T)
+        RandomZSliced(keys=["image"]),                     # (T, H, W, D) -> (1, H, W, T)
         RandRotated(keys=["image"], range_x=0.0872665, prob=0.2),
         RandFlipd(keys=["image"], spatial_axis=1, prob=0.5),
         ToTensord(keys=["image"]),
     ])
 
     val_rand_transforms = Compose([
-        RandomZSliced(keys=["image"]),                     # (T, H, W, D) → (1, H, W, T)
+        RandomZSliced(keys=["image"]),                     # (T, H, W, D) -> (1, H, W, T)
         ToTensord(keys=["image"]),
     ])
 

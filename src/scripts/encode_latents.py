@@ -29,6 +29,14 @@ from src.models.vqvae import VQVAE
 from src.data.dataloading import PermuteDimensionsd, CyclicPadTimed, UnsqueezeChanneld  # noqa: F401
 
 
+def get_stage1_params(config):
+    if "model" in config:
+        return config.model.params
+    if "stage1" in config:
+        return config.stage1.params
+    raise ValueError("VQ-GAN config must contain either 'model' or 'stage1'.")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Encode 4D CMR volumes into VQ-GAN latents")
     parser.add_argument("--csv", required=True, help="CSV with 'image' column (paths to 4D .nii.gz files)")
@@ -55,7 +63,7 @@ def parse_args():
 
 def load_model(config_path, ckpt_path, device):
     config = OmegaConf.load(config_path)
-    model = VQVAE(**config.model.params)
+    model = VQVAE(**get_stage1_params(config))
 
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     state_dict = ckpt.get("model", ckpt.get("state_dict", ckpt))

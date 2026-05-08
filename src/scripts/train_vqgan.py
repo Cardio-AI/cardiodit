@@ -30,6 +30,52 @@ from src.data.dataloading import get_vqgan_dataloader
 from src.utils.wandb_utils import init_wandb, make_run_name
 
 
+def normalize_config(config):
+    """Accept both the compact ``stage1:`` config and the repo config."""
+    if "model" in config:
+        return config
+
+    if "stage1" not in config:
+        raise ValueError("Config must contain either a 'model' block or a 'stage1' block.")
+
+    perceptual_params = {}
+    if "perceptual_network" in config:
+        perceptual_params = config.perceptual_network.get("params", {})
+
+    defaults = {
+        "model": {"params": config.stage1.params},
+        "discriminator": config.discriminator,
+        "training": {
+            "n_epochs": int(config.stage1.get("n_epochs", 500)),
+            "eval_freq": int(config.stage1.get("eval_freq", 10)),
+            "batch_size": int(config.stage1.get("batch_size", 4)),
+            "num_workers": int(config.stage1.get("num_workers", 8)),
+            "base_lr": float(config.stage1.get("base_lr", 5.0e-5)),
+            "disc_lr": float(config.stage1.get("disc_lr", 2.0e-5)),
+            "lr_gamma": float(config.stage1.get("lr_gamma", 0.9999)),
+            "roi_size": list(config.stage1.get("roi_size", [256, 256, 32])),
+            "target_frames": int(config.stage1.get("target_frames", 32)),
+            "use_persistent": bool(config.stage1.get("use_persistent", True)),
+        },
+        "losses": {
+            "perceptual_weight": float(config.stage1.get("perceptual_weight", 0.002)),
+            "jukebox_weight": float(config.stage1.get("jukebox_weight", 0.0)),
+            "adv_weight": float(config.stage1.get("adv_weight", 0.005)),
+            "adv_warmup": int(config.stage1.get("adv_warmup", 50)),
+            "params": {
+                "perceptual_params": perceptual_params,
+                "jukebox_params": {"spatial_dims": 3},
+            },
+        },
+        "wandb": {
+            "entity": config.get("wandb", {}).get("entity", None),
+            "project": config.get("wandb", {}).get("project", "cardiodit"),
+            "offline": config.get("wandb", {}).get("offline", False),
+        },
+    }
+    return OmegaConf.create(defaults)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_dir", type=str, required=False)
@@ -68,7 +114,7 @@ def main():
     if device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
 
-    config = OmegaConf.load(args.config)
+    config = normalize_config(OmegaConf.load(args.config))
 
     config_stem = Path(args.config).stem
     run_name = args.run_name or make_run_name("vqgan", args.config)

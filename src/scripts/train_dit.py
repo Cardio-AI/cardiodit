@@ -26,6 +26,43 @@ from src.training.dit_trainer import DiTTrainer
 from src.utils.wandb_utils import init_wandb, make_run_name
 
 
+def normalize_config(config):
+    """Accept both the submission-style ``dit:`` config and the repo config."""
+    if "model" in config:
+        return config
+
+    if "dit" not in config:
+        raise ValueError("Config must contain either a 'model' block or a 'dit' block.")
+
+    defaults = {
+        "model": {"params": config.dit.params},
+        "scheduler": config.dit.scheduler,
+        "training": {
+            "n_epochs": int(config.dit.get("n_epochs", 3000)),
+            "eval_freq": int(config.dit.get("eval_freq", 10)),
+            "batch_size": int(config.dit.get("batch_size", 1)),
+            "num_workers": int(config.dit.get("num_workers", 8)),
+            "scale_factor": float(config.dit.get("scale_factor", 1.0)),
+            "preload_latents": bool(config.dit.get("preload_latents", True)),
+            "use_ema": bool(config.dit.get("use_ema", True)),
+            "ema_decay": float(config.dit.get("ema_decay", 0.9999)),
+            "grad_accum_steps": int(config.dit.get("grad_accum_steps", 1)),
+        },
+        "optim": {
+            "lr": float(config.dit.get("base_lr", 1.0e-4)),
+            "weight_decay": float(config.dit.get("weight_decay", 1.0e-4)),
+            "warmup_epochs": int(config.dit.get("warmup_epochs", 100)),
+            "min_lr_ratio": float(config.dit.get("min_lr_ratio", 0.01)),
+        },
+        "wandb": {
+            "entity": config.get("wandb", {}).get("entity", None),
+            "project": config.get("wandb", {}).get("project", "cardiodit"),
+            "offline": config.get("wandb", {}).get("offline", False),
+        },
+    }
+    return OmegaConf.create(defaults)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -63,7 +100,7 @@ def main():
     if device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
 
-    config = OmegaConf.load(args.config)
+    config = normalize_config(OmegaConf.load(args.config))
     run_name = args.run_name or make_run_name("dit", args.config)
     run_dir = Path(args.output_dir) / run_name
     if is_main:

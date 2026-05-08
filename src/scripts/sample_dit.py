@@ -20,6 +20,30 @@ from src.models.dit import DiT4D
 from src.models.vqvae import VQVAE
 
 
+def get_stage1_params(cfg):
+    if "model" in cfg:
+        return cfg.model.params
+    if "stage1" in cfg:
+        return cfg.stage1.params
+    raise ValueError("Stage-1 config must contain either 'model' or 'stage1'.")
+
+
+def get_dit_params(cfg):
+    if "model" in cfg:
+        return cfg.model.params
+    if "dit" in cfg:
+        return cfg.dit.params
+    raise ValueError("DiT config must contain either 'model' or 'dit'.")
+
+
+def get_scheduler_params(cfg):
+    if "scheduler" in cfg:
+        return cfg.scheduler
+    if "dit" in cfg and "scheduler" in cfg.dit:
+        return cfg.dit.scheduler
+    raise ValueError("DiT config must contain scheduler settings.")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Sample from a trained CardioDiT")
     parser.add_argument("--stage1_ckpt", type=str, required=True)
@@ -46,7 +70,7 @@ def parse_args():
 
 def load_stage1(cfg_path, ckpt_path, device):
     cfg = OmegaConf.load(cfg_path)
-    model = VQVAE(**cfg.model.params)
+    model = VQVAE(**get_stage1_params(cfg))
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state_dict = ckpt.get("model", ckpt.get("state_dict", ckpt))
     model_keys = set(model.state_dict().keys())
@@ -57,7 +81,7 @@ def load_stage1(cfg_path, ckpt_path, device):
 
 def load_dit(cfg_path, ckpt_path, device):
     cfg = OmegaConf.load(cfg_path)
-    model = DiT4D(**cfg.model.params)
+    model = DiT4D(**get_dit_params(cfg))
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state_dict = dict(ckpt.get("model", ckpt))
     if ckpt.get("ema") is not None:
@@ -67,7 +91,7 @@ def load_dit(cfg_path, ckpt_path, device):
 
 
 def build_scheduler(name, diff_cfg):
-    cfg = dict(diff_cfg.scheduler)
+    cfg = dict(get_scheduler_params(diff_cfg))
     if name == "ddpm":
         return DDPMScheduler(**cfg)
     if name == "ddim":
