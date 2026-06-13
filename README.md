@@ -12,9 +12,6 @@ The repository contains the compact paper-style pipeline:
 - DDPM training with cosine schedule and v-prediction.
 - DDPM/DDIM sampling.
 
-Experimental ablations, flow matching, ControlNet, and 3D compatibility code are
-intentionally not included in this submission repo.
-
 ## Paper
 
 [CardioDiT: Latent Diffusion Transformers for 4D Cardiac MRI Synthesis](https://arxiv.org/pdf/2603.25194)
@@ -137,12 +134,7 @@ Samples are saved as 4D NIfTI volumes with shape `(H, W, D, T)`.
 | `dit_ds8_b4.yaml` | 12 | 768 | 12 |
 | `dit_ds8_l4.yaml` | 16 | 768 | 12 |
 
-## Citation
 
-```bibtex
-@article{seyfarth2026cardiodit,
-  title={CardioDiT: Latent Diffusion Transformers for 4D Cardiac Cine MRI Synthesis},
-  author={Seyfarth, M. and others},
-  year={2026}
-}
-```
+## Pretrained model weights
+
+Coming soon!
