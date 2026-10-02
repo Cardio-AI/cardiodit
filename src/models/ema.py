@@ -30,11 +30,11 @@ class EMA:
         """Return the decay to use at the current step."""
         if self.warmup_steps <= 0:
             return self.decay
-        # Cosine ramp from 0.9 to self.decay over warmup_steps.
+        # Cosine ramp from 0.9 → self.decay over warmup_steps.
         if self.step >= self.warmup_steps:
             return self.decay
         progress = self.step / self.warmup_steps
-        cosine = 0.5 * (1.0 - math.cos(math.pi * progress))   # 0 to 1
+        cosine = 0.5 * (1.0 - math.cos(math.pi * progress))   # 0 → 1
         start = 0.9
         return start + (self.decay - start) * cosine
 
@@ -69,8 +69,8 @@ class EMA:
         }
 
     def load_state_dict(self, state_dict):
-        self.decay = state_dict["decay"]
-        self.warmup_steps = state_dict.get("warmup_steps", 0)
+        # Keep self.decay / self.warmup_steps from the current config so a
+        # resume can change EMA hyperparams. Restore step + shadow only.
         self.step = state_dict.get("step", 0)
         device = next(self.model.parameters()).device
         self.shadow = {k: v.to(device) for k, v in state_dict["shadow"].items()}

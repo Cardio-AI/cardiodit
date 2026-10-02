@@ -1,0 +1,82 @@
+# Historical temporal-alignment experiment; recompute scale_factor for your data.
+# DDPM ablation step 07 — self-conditioning  [all DDPM improvements enabled]
+#
+# Changes from step 06:
+#   model.params.self_conditioning: false → true
+#   training.self_conditioning:     false → true
+#
+# Rationale: self-conditioning (Chen et al. 2022) feeds the model's own
+# previous x0 estimate as an additional input on 50% of training steps,
+# allowing it to iteratively refine rather than predict from scratch.
+# Consistently yields ~10–20% FID improvement.  Used in FLUX, SD3, and all
+# major high-quality diffusion models published after 2023.
+#
+# For 4D CMR: cardiac motion is highly structured and predictable, so a rough
+# x0 estimate at step t should be an especially strong conditioning signal.
+#
+# Implementation details:
+#   - PatchEmbed4D.proj input dimension doubles (2 × in_channels × patch_volume).
+#   - ~50% of training steps run a no-grad forward pass to get x_self_cond;
+#     the other 50% receive zeros.  Inference uses x0_pred from scheduler.step
+#     as the self-conditioning signal for the next denoising step.
+#
+# IMPORTANT: model.params.self_conditioning and training.self_conditioning
+# must always match — both true or both false.
+#
+# This config is the full set of all DDPM improvements for CardioDiT.
+# Latent augmentation is intentionally omitted (see Architecture_discussion.md
+# §4.2 for the valid CMR flips; not yet implemented).
+
+model:
+  params:
+    input_size: [10, 28, 28, 8]
+    patch_size: [1, 4, 4, 2]
+    in_channels: 8
+    hidden_size: 1024
+    depth: 12
+    num_heads: 16
+    mlp_ratio: 4.0
+    class_dropout_prob: 0.0
+    num_classes: 0
+    learn_sigma: false
+    flash_attention: true
+    attn_drop: 0.0
+    mlp_drop: 0.0
+    spacing: [8.0, 1.5, 1.5, 1.0]
+    self_conditioning: true           # changed: was false
+
+scheduler:
+  schedule: "cosine"
+  num_train_timesteps: 300
+  prediction_type: "v_prediction"
+  zero_terminal_snr: true
+
+training:
+  objective_loss: huber_legacy
+  allow_legacy_latents: true
+  n_epochs: 3000
+  eval_freq: 50
+  batch_size: 2
+  num_workers: 4
+  amp_dtype: bf16
+  scale_factor: 1.0
+  use_ema: true
+  ema_decay: 0.9999
+  ema_warmup_steps: 5000
+  min_snr_gamma: 0.0
+  self_conditioning: true            # changed: was false
+  offset_noise_strength: 0.1
+  grad_accum_steps: 4
+  normalize_latents: true
+  latent_stats_path: null
+
+optim:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 100
+  min_lr_ratio: 0.01
+
+wandb:
+  entity: null
+  project: cardiodit-dev
+  offline: true

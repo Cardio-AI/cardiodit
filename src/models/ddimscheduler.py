@@ -26,7 +26,7 @@ class DDIMPredictionType(StrEnum):
 
 class DDIMScheduler(Scheduler):
     """
-    DDIM scheduler: deterministic (eta=0) or stochastic (eta>0) denoising.
+    DDIM scheduler — deterministic (eta=0) or stochastic (eta>0) denoising.
     """
 
     def __init__(

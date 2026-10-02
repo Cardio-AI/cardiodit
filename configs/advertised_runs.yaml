@@ -1,0 +1,19 @@
+schema_version: 1
+source_generator: scripts/mnm2_evolution/prepare_mnm2_evolution.py
+stage1:
+- configs/stage1/S1_ds8xy_noT_native_v2_remediated.yaml
+- configs/stage1/S1_ds4xy_noT_native_v2_remediated.yaml
+- configs/stage1/S1_ds4_all_dims_paddiv_v2_remediated.yaml
+- configs/stage1/S1_ds4_all_dims_fixed32_v2_remediated.yaml
+dit:
+- configs/dit/native_padded/S1_ds8xy_noT_native_ddpm_rope4d_selfcond_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds8xy_noT_native_ddpm_varivit_center_select_selfcond_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds4xy_noT_native_ddpm_rope4d_selfcond_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds4xy_noT_native_ddpm_varivit_center_select_selfcond_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds4_all_dims_paddiv_ddpm_rope4d_selfcond_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds4_all_dims_paddiv_ddpm_varivit_center_select_selfcond_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds8xy_noT_native_ddpm_rope4d_selfcond_patch2x2_t5_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds4xy_noT_native_ddpm_rope4d_selfcond_patch4x4_t5_v2_remediated.yaml
+- configs/dit/native_padded/S1_ds4_all_dims_paddiv_ddpm_rope4d_selfcond_patch4x4_t1_v2_remediated.yaml
+legacy_policy: Other checked-in configs are historical/experimental and require explicit
+  legacy flags; they are not new-run quick-start configs.

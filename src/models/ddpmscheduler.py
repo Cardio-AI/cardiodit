@@ -11,11 +11,34 @@
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 from monai.utils import StrEnum
 
 from .scheduler import Scheduler
+
+
+def _compatible_generator(
+    generator: torch.Generator | None,
+    device: torch.device,
+) -> torch.Generator | None:
+    """Use a generator only when PyTorch can draw on the target device."""
+    if generator is None:
+        return None
+    generator_device = getattr(generator, "device", None)
+    if generator_device is None:
+        return generator
+    generator_device = torch.device(generator_device)
+    device = torch.device(device)
+    if generator_device.type != device.type:
+        return None
+    if (
+        device.type == "cuda"
+        and generator_device.index is not None
+        and device.index is not None
+        and generator_device.index != device.index
+    ):
+        return None
+    return generator
 
 
 class DDPMVarianceType(StrEnum):
@@ -56,8 +79,11 @@ class DDPMScheduler(Scheduler):
         self.clip_sample = clip_sample
         self.variance_type = variance_type
         self.prediction_type = prediction_type
+        self.solver_order = 1
 
     def set_timesteps(self, num_inference_steps: int, device: str | torch.device | None = None) -> None:
+        if num_inference_steps < 1:
+            raise ValueError("`num_inference_steps` must be at least 1.")
         if num_inference_steps > self.num_train_timesteps:
             raise ValueError(
                 f"`num_inference_steps`: {num_inference_steps} cannot be larger than `self.num_train_timesteps`:"
@@ -65,51 +91,138 @@ class DDPMScheduler(Scheduler):
             )
 
         self.num_inference_steps = num_inference_steps
-        step_ratio = self.num_train_timesteps // self.num_inference_steps
-        timesteps = (np.arange(0, num_inference_steps) * step_ratio).round()[::-1].astype(np.int64)
-        self.timesteps = torch.from_numpy(timesteps).to(device)
+        if num_inference_steps == 1:
+            timesteps = torch.tensor([self.num_train_timesteps - 1], dtype=torch.long)
+        else:
+            timesteps = torch.linspace(
+                self.num_train_timesteps - 1,
+                0,
+                num_inference_steps,
+                dtype=torch.float64,
+            ).round().to(torch.long)
+        if timesteps.numel() > 1 and not torch.all(timesteps[:-1] > timesteps[1:]):
+            raise RuntimeError("DDPM inference timestep grid must be strictly decreasing.")
+        self.timesteps = timesteps.to(device)
 
-    def _get_mean(self, timestep: int, x_0: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
-        alpha_t = self.alphas[timestep]
-        alpha_prod_t = self.alphas_cumprod[timestep]
-        alpha_prod_t_prev = self.alphas_cumprod[timestep - 1] if timestep > 0 else self.one
+    def _get_previous_timestep(self, timestep: int) -> int:
+        if self.num_inference_steps is None:
+            raise RuntimeError("Call set_timesteps() before step().")
+        matches = (self.timesteps == timestep).nonzero(as_tuple=True)[0]
+        if matches.numel() != 1:
+            raise ValueError(
+                f"Timestep {timestep} is not a unique member of the configured inference grid."
+            )
+        index = int(matches.item())
+        return int(self.timesteps[index + 1]) if index + 1 < len(self.timesteps) else -1
 
-        x_0_coefficient = alpha_prod_t_prev.sqrt() * self.betas[timestep] / (1 - alpha_prod_t)
-        x_t_coefficient = alpha_t.sqrt() * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
+    def _transition_terms(
+        self,
+        timestep: int,
+        previous_timestep: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if previous_timestep >= timestep:
+            raise ValueError(
+                "DDPM denoising requires previous_timestep < timestep; "
+                f"got {previous_timestep} >= {timestep}."
+            )
+        schedule_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+        alpha_prod_t = self.alphas_cumprod[timestep].to(device=device, dtype=schedule_dtype)
+        alpha_prod_s = (
+            self.alphas_cumprod[previous_timestep].to(device=device, dtype=schedule_dtype)
+            if previous_timestep >= 0
+            else torch.ones((), device=device, dtype=schedule_dtype)
+        )
+        alpha_t_given_s = alpha_prod_t / alpha_prod_s
+        beta_t_given_s = 1 - alpha_t_given_s
+        beta_prod_t = 1 - alpha_prod_t
+        beta_prod_s = 1 - alpha_prod_s
+        if not bool(torch.isfinite(alpha_t_given_s)) or not bool(alpha_t_given_s >= 0):
+            raise RuntimeError("DDPM transition has a non-finite or negative cumulative alpha ratio.")
+        if not bool(beta_t_given_s > 0) or not bool(beta_prod_t > 0):
+            raise RuntimeError("DDPM transition has a zero or negative noise ratio.")
+        return alpha_prod_t, alpha_prod_s, alpha_t_given_s, beta_prod_t, beta_prod_s
+
+    def _get_mean(
+        self,
+        timestep: int,
+        previous_timestep: int,
+        x_0: torch.Tensor,
+        x_t: torch.Tensor,
+    ) -> torch.Tensor:
+        _, alpha_prod_s, alpha_t_given_s, beta_prod_t, beta_prod_s = self._transition_terms(
+            timestep,
+            previous_timestep,
+            device=x_t.device,
+            dtype=x_t.dtype,
+        )
+        beta_t_given_s = 1 - alpha_t_given_s
+        x_0_coefficient = alpha_prod_s.sqrt() * beta_t_given_s / beta_prod_t
+        x_t_coefficient = alpha_t_given_s.sqrt() * beta_prod_s / beta_prod_t
 
         return x_0_coefficient * x_0 + x_t_coefficient * x_t
 
-    def _get_variance(self, timestep: int, predicted_variance: torch.Tensor | None = None) -> torch.Tensor:
-        alpha_prod_t = self.alphas_cumprod[timestep]
-        alpha_prod_t_prev = self.alphas_cumprod[timestep - 1] if timestep > 0 else self.one
-
-        variance = (1 - alpha_prod_t_prev) / (1 - alpha_prod_t) * self.betas[timestep]
+    def _get_variance(
+        self,
+        timestep: int,
+        previous_timestep: int,
+        predicted_variance: torch.Tensor | None = None,
+        *,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
+        device = device or self.alphas_cumprod.device
+        dtype = dtype or self.alphas_cumprod.dtype
+        _, _, alpha_t_given_s, beta_prod_t, beta_prod_s = self._transition_terms(
+            timestep,
+            previous_timestep,
+            device=device,
+            dtype=dtype,
+        )
+        beta_t_given_s = 1 - alpha_t_given_s
+        variance = beta_prod_s / beta_prod_t * beta_t_given_s
         if self.variance_type == DDPMVarianceType.FIXED_SMALL:
             variance = torch.clamp(variance, min=1e-20)
         elif self.variance_type == DDPMVarianceType.FIXED_LARGE:
-            variance = self.betas[timestep]
+            variance = beta_t_given_s
         elif self.variance_type == DDPMVarianceType.LEARNED:
+            if predicted_variance is None:
+                raise ValueError("Learned DDPM variance requires a predicted variance tensor.")
             return predicted_variance
         elif self.variance_type == DDPMVarianceType.LEARNED_RANGE:
+            if predicted_variance is None:
+                raise ValueError("Learned-range DDPM variance requires a predicted variance tensor.")
             min_log = variance
-            max_log = self.betas[timestep]
+            max_log = beta_t_given_s
             frac = (predicted_variance + 1) / 2
             variance = frac * max_log + (1 - frac) * min_log
 
         return variance
 
     def step(
-        self, model_output: torch.Tensor, timestep: int, sample: torch.Tensor, generator: torch.Generator | None = None
+        self,
+        model_output: torch.Tensor,
+        timestep: int | torch.Tensor,
+        sample: torch.Tensor,
+        generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        timestep = int(timestep)
+        previous_timestep = self._get_previous_timestep(timestep)
         if model_output.shape[1] == sample.shape[1] * 2 and self.variance_type in ["learned", "learned_range"]:
             model_output, predicted_variance = torch.split(model_output, sample.shape[1], dim=1)
         else:
             predicted_variance = None
 
-        alpha_prod_t = self.alphas_cumprod[timestep]
-        alpha_prod_t_prev = self.alphas_cumprod[timestep - 1] if timestep > 0 else self.one
+        schedule_dtype = (
+            torch.float32 if sample.dtype in (torch.float16, torch.bfloat16) else sample.dtype
+        )
+        alpha_prod_t = self.alphas_cumprod[timestep].to(
+            device=sample.device,
+            dtype=schedule_dtype,
+        )
         beta_prod_t = 1 - alpha_prod_t
-        beta_prod_t_prev = 1 - alpha_prod_t_prev
 
         if self.prediction_type == DDPMPredictionType.EPSILON:
             pred_original_sample = (sample - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
@@ -121,17 +234,31 @@ class DDPMScheduler(Scheduler):
         if self.clip_sample:
             pred_original_sample = torch.clamp(pred_original_sample, -1, 1)
 
-        pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * self.betas[timestep]) / beta_prod_t
-        current_sample_coeff = self.alphas[timestep] ** (0.5) * beta_prod_t_prev / beta_prod_t
+        if previous_timestep == -1:
+            return pred_original_sample, pred_original_sample
 
-        pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * sample
+        pred_prev_sample = self._get_mean(
+            timestep,
+            previous_timestep,
+            pred_original_sample,
+            sample,
+        )
 
-        variance = 0
-        if timestep > 0:
-            noise = torch.randn(
-                model_output.size(), dtype=model_output.dtype, layout=model_output.layout, generator=generator
-            ).to(model_output.device)
-            variance = (self._get_variance(timestep, predicted_variance=predicted_variance) ** 0.5) * noise
+        device = model_output.device
+        noise = torch.randn(
+            sample.size(),
+            dtype=sample.dtype,
+            layout=sample.layout,
+            device=device,
+            generator=_compatible_generator(generator, device),
+        )
+        variance = self._get_variance(
+            timestep,
+            previous_timestep,
+            predicted_variance=predicted_variance,
+            device=sample.device,
+            dtype=sample.dtype,
+        ).sqrt() * noise
 
         pred_prev_sample = pred_prev_sample + variance
 

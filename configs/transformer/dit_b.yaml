@@ -1,0 +1,51 @@
+# CardioDiT-B  (~135M parameters)
+
+model:
+  params:
+    input_size: [10, 28, 28, 8]
+    patch_size: [1, 4, 4, 2]
+    in_channels: 8
+    hidden_size: 1024
+    depth: 12
+    num_heads: 16
+    mlp_ratio: 4.0
+    class_dropout_prob: 0.0
+    num_classes: 0
+    learn_sigma: false
+    flash_attention: true
+    self_conditioning: true
+    # Physical patch spacing (Z, X, Y, T) for anisotropy-aware pos embed.
+    # Z: ~8 mm slice thickness; X/Y: ~1.5 mm in-plane; T: normalised to 1.
+    spacing: [8.0, 1.5, 1.5, 1.0]
+
+scheduler:
+  schedule: "cosine"
+  num_train_timesteps: 300
+  prediction_type: "v_prediction"
+
+training:
+  n_epochs: 3000
+  eval_freq: 10
+  batch_size: 2
+  num_workers: 8
+  scale_factor: 1.0
+  use_ema: true
+  ema_decay: 0.9999
+  ema_warmup_steps: 0
+  min_snr_gamma: 0.0
+  grad_accum_steps: 1
+  self_conditioning: true
+  offset_noise_strength: 0.0   # set >0 (e.g. 0.1) to enable offset noise
+  normalize_latents: false      # set true and provide latent_stats_path, or compute on-the-fly
+  # latent_stats_path: data/latents/train/latent_stats.pt
+
+optim:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 100
+  min_lr_ratio: 0.01
+
+wandb:
+  entity: null
+  project: cardiodit-dev
+  offline: true       # set true on cluster nodes without internet

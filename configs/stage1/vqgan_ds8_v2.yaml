@@ -1,0 +1,77 @@
+# VQ-GAN — 8× downsampling on all dimensions (H, W, T)
+#
+# Three encoder/decoder stages, each with stride 2 on all three spatial dims.
+#
+# Compression:
+#   H:  224 → 112 → 56 → 28    (8×)
+#   W:  224 → 112 → 56 → 28    (8×)
+#   T:   32 →  16 →  8 →  4    (8×)
+#
+# Latent per 2D+t slice: (8, 28, 28, 4)
+# Full 4D latent (D=10): (8, 10, 28, 28, 4)
+#
+# This is the most aggressive compression variant. The small spatial latent
+# (28×28) keeps DiT token counts manageable but may lose fine spatial detail.
+
+model:
+  params:
+    spatial_dims: 3
+    in_channels: 1
+    out_channels: 1
+    num_channels: [128, 256, 256]
+    num_res_channels: [128, 256, 256]
+    num_res_layers: 2
+    downsample_parameters:
+      - [2, 4, 1, 1]          # stage 1: stride 2 on H, W, T
+      - [2, 4, 1, 1]          # stage 2: stride 2 on H, W, T
+      - [2, 4, 1, 1]          # stage 3: stride 2 on H, W, T
+    upsample_parameters:
+      - [2, 4, 1, 1, 0]       # reverses stage 3
+      - [2, 4, 1, 1, 0]       # reverses stage 2
+      - [2, 4, 1, 1, 0]       # reverses stage 1
+    num_embeddings: 2048
+    embedding_dim: 8
+    commitment_cost: 0.25 #0.25
+    decay: 0.95 #0.95
+    epsilon: 1e-5
+
+    dropout: 0.0
+    act: "RELU"
+
+discriminator:
+  params:
+    spatial_dims: 3
+    num_channels: 64
+    num_layers_d: 3
+    in_channels: 1
+    out_channels: 1
+    norm: "INSTANCE"
+
+training:
+  n_epochs: 300
+  eval_freq: 10
+  batch_size: 8
+  num_workers: 8
+  base_lr: 3.0e-5
+  disc_lr: 1.0e-5
+  lr_gamma: 0.9999
+  roi_size: [224, 224, 32]   # (H, W, T) per 2D+t slice
+  target_frames: 32
+  use_persistent: true
+
+losses:
+  perceptual_weight: 0.2 #0.002
+  jukebox_weight: 0.2 #0.8
+  adv_weight: 0.05 #0.005
+  adv_warmup: 50 #50
+  params:
+    perceptual_params:
+      spatial_dims: 3
+      network_type: "squeeze"
+    jukebox_params:
+      spatial_dims: 3
+
+wandb:
+  entity: null
+  project: cardiodit-dev
+  offline: true       # set true on cluster nodes without internet
