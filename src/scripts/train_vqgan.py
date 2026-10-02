@@ -28,52 +28,13 @@ from src.losses.vqgan_loss import VQGANLoss
 from src.training.vqgan_trainer import VQGANTrainer
 from src.data.dataloading import get_vqgan_dataloader
 from src.utils.wandb_utils import init_wandb, make_run_name
-
-
-def normalize_config(config):
-    """Accept both the compact ``stage1:`` config and the repo config."""
-    if "model" in config:
-        return config
-
-    if "stage1" not in config:
-        raise ValueError("Config must contain either a 'model' block or a 'stage1' block.")
-
-    perceptual_params = {}
-    if "perceptual_network" in config:
-        perceptual_params = config.perceptual_network.get("params", {})
-
-    defaults = {
-        "model": {"params": config.stage1.params},
-        "discriminator": config.discriminator,
-        "training": {
-            "n_epochs": int(config.stage1.get("n_epochs", 500)),
-            "eval_freq": int(config.stage1.get("eval_freq", 10)),
-            "batch_size": int(config.stage1.get("batch_size", 4)),
-            "num_workers": int(config.stage1.get("num_workers", 8)),
-            "base_lr": float(config.stage1.get("base_lr", 5.0e-5)),
-            "disc_lr": float(config.stage1.get("disc_lr", 2.0e-5)),
-            "lr_gamma": float(config.stage1.get("lr_gamma", 0.9999)),
-            "roi_size": list(config.stage1.get("roi_size", [256, 256, 32])),
-            "target_frames": int(config.stage1.get("target_frames", 32)),
-            "use_persistent": bool(config.stage1.get("use_persistent", True)),
-        },
-        "losses": {
-            "perceptual_weight": float(config.stage1.get("perceptual_weight", 0.002)),
-            "jukebox_weight": float(config.stage1.get("jukebox_weight", 0.0)),
-            "adv_weight": float(config.stage1.get("adv_weight", 0.005)),
-            "adv_warmup": int(config.stage1.get("adv_warmup", 50)),
-            "params": {
-                "perceptual_params": perceptual_params,
-                "jukebox_params": {"spatial_dims": 3},
-            },
-        },
-        "wandb": {
-            "entity": config.get("wandb", {}).get("entity", None),
-            "project": config.get("wandb", {}).get("project", "cardiodit"),
-            "offline": config.get("wandb", {}).get("offline", False),
-        },
-    }
-    return OmegaConf.create(defaults)
+from src.utils.checkpointing import (
+    CheckpointError,
+    build_provenance,
+    canonical_hash,
+    load_latest_checkpoint,
+    restore_rng_state,
+)
 
 
 def parse_args():
@@ -85,7 +46,42 @@ def parse_args():
     parser.add_argument("--training_ids", type=str, required=True)
     parser.add_argument("--validation_ids", type=str, required=True)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--allow_schedule_migration",
+        action="store_true",
+        help="Explicitly migrate an epoch-scheduled legacy checkpoint to update scheduling.",
+    )
+    parser.add_argument(
+        "--allow_checkpoint_mismatch",
+        action="store_true",
+        help="Explicitly accept and record config/data provenance mismatches.",
+    )
     return parser.parse_args()
+
+
+def _move_optimizer_state_to_device(optimizer, device):
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.to(device)
+
+
+def resolve_cache_dir(cli_cache_dir, config):
+    return cli_cache_dir or config.training.get("cache_dir", "/tmp/vqgan_cache")
+
+
+def validate_vqgan_config(config, world_size: int) -> None:
+    """Fail before process-group/model setup for unsafe Stage-1 settings."""
+    model_params = config.get("model", {}).get("params", {})
+    if int(world_size) > 1 and not bool(model_params.get("ddp_sync", False)):
+        raise ValueError(
+            "Distributed Stage-1 training with an EMA codebook requires "
+            "model.params.ddp_sync=true. Unsynchronized EMA codebooks diverge "
+            "across ranks."
+        )
+    dead_code_threshold = float(model_params.get("dead_code_threshold", 0.5))
+    if dead_code_threshold < 0:
+        raise ValueError("model.params.dead_code_threshold must be non-negative")
 
 
 def main():
@@ -93,6 +89,8 @@ def main():
 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
+    config = OmegaConf.load(args.config)
+    validate_vqgan_config(config, world_size)
 
     torch.set_float32_matmul_precision("high")
 
@@ -114,7 +112,7 @@ def main():
     if device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
 
-    config = normalize_config(OmegaConf.load(args.config))
+    cache_dir = resolve_cache_dir(args.cache_dir, config)
 
     config_stem = Path(args.config).stem
     run_name = args.run_name or make_run_name("vqgan", args.config)
@@ -126,6 +124,35 @@ def main():
 
     if world_size > 1:
         dist.barrier()
+
+    resolved_config = OmegaConf.to_container(config, resolve=True)
+    preprocessing_contract = {
+        "roi_size": list(config.training.roi_size),
+        "target_frames": config.training.get("target_frames", None),
+        "time_pad_multiple": config.training.get("time_pad_multiple", None),
+        "spatial_permute": config.training.get("spatial_permute", None),
+        "quantized": True,
+    }
+    if is_main:
+        provenance = build_provenance(
+            resolved_config=resolved_config,
+            train_manifest=args.training_ids,
+            validation_manifest=args.validation_ids,
+            latent_preprocessing=preprocessing_contract,
+            run_dir=run_dir,
+        )
+    else:
+        provenance = None
+    if world_size > 1:
+        payload = [provenance]
+        dist.broadcast_object_list(payload, src=0)
+        provenance = payload[0]
+
+    resume_result = load_latest_checkpoint(
+        run_dir,
+        expected_provenance=provenance,
+        allow_mismatch=args.allow_checkpoint_mismatch,
+    )
 
     writer_train = SummaryWriter(run_dir / "logs" / "train") if is_main else None
     writer_val = SummaryWriter(run_dir / "logs" / "val") if is_main else None
@@ -143,9 +170,14 @@ def main():
     # -----------------------
     roi_size = tuple(config.training.roi_size)   # e.g. (224, 224, 32) = (H, W, T)
     target_frames = config.training.get("target_frames", roi_size[-1])
+    time_pad_multiple = config.training.get("time_pad_multiple", None)
+
+    spatial_permute = config.training.get("spatial_permute", None)
+    if spatial_permute is not None:
+        spatial_permute = tuple(spatial_permute)
 
     train_loader, val_loader = get_vqgan_dataloader(
-        cache_dir=args.cache_dir or "/tmp/cardiodit_vqgan_cache",
+        cache_dir=cache_dir,
         training_ids=args.training_ids,
         validation_ids=args.validation_ids,
         batch_size=config.training.batch_size,
@@ -154,7 +186,9 @@ def main():
         world_size=world_size,
         roi_size=roi_size,
         target_frames=target_frames,
+        time_pad_multiple=time_pad_multiple,
         use_persistent=config.training.use_persistent,
+        spatial_permute=spatial_permute,
     )
 
     # -----------------------
@@ -181,26 +215,61 @@ def main():
     # -----------------------
     optimizer_g = optim.Adam(model.parameters(), lr=config.training.base_lr, betas=(0.5, 0.9))
     optimizer_d = optim.Adam(discriminator.parameters(), lr=config.training.disc_lr, betas=(0.5, 0.9))
-    scheduler_g = optim.lr_scheduler.ExponentialLR(optimizer_g, gamma=config.training.get("lr_gamma", 0.999))
-    scheduler_d = optim.lr_scheduler.ExponentialLR(optimizer_d, gamma=config.training.get("lr_gamma", 0.999))
+    # Preserve the configured epoch-scale decay while stepping the scheduler at
+    # the actual optimizer-update cadence.
+    if config.training.get("lr_update_gamma", None) is not None:
+        update_gamma = float(config.training.lr_update_gamma)
+        schedule_source = "explicit_update_gamma"
+    elif not args.allow_schedule_migration:
+        raise ValueError(
+            "New Stage-1 runs require training.lr_update_gamma. The historical "
+            "epoch lr_gamma conversion is available only with the explicit "
+            "--allow_schedule_migration legacy flag."
+        )
+    else:
+        epoch_gamma = float(config.training.get("lr_gamma", 0.999))
+        update_gamma = epoch_gamma ** (1.0 / max(len(train_loader), 1))
+        schedule_source = "legacy_epoch_gamma_conversion"
+    if not 0.0 < update_gamma <= 1.0:
+        raise ValueError("training.lr_update_gamma must be in (0, 1]")
+    schedule_contract = {
+        "unit": "optimizer_update",
+        "kind": "exponential",
+        "update_gamma": update_gamma,
+        "source": schedule_source,
+    }
+    scheduler_g = optim.lr_scheduler.ExponentialLR(optimizer_g, gamma=update_gamma)
+    scheduler_d = optim.lr_scheduler.ExponentialLR(optimizer_d, gamma=update_gamma)
 
     # -----------------------
     # Resume checkpoint
     # -----------------------
-    checkpoint_path = run_dir / "last_checkpoint.pth"
     start_epoch = 0
     best_loss = float("inf")
+    ckpt = resume_result[0] if resume_result is not None else None
+    checkpoint_path = resume_result[1] if resume_result is not None else None
+    resume_overrides = resume_result[2] if resume_result is not None else []
 
-    if checkpoint_path.exists():
+    if ckpt is not None:
         if is_main:
             print(f"Loading checkpoint from {checkpoint_path}")
-        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        unavailable = [
+            field
+            for field in ("model", "discriminator", "optimizer_g", "optimizer_d", "epoch")
+            if ckpt.get(field) is None
+        ]
+        if unavailable:
+            raise CheckpointError(
+                f"VQGAN checkpoint cannot resume; unavailable fields: {unavailable}"
+            )
         raw_model = model.module if isinstance(model, DDP) else model
         raw_disc = discriminator.module if isinstance(discriminator, DDP) else discriminator
         raw_model.load_state_dict(ckpt["model"])
         raw_disc.load_state_dict(ckpt["discriminator"])
         optimizer_g.load_state_dict(ckpt["optimizer_g"])
         optimizer_d.load_state_dict(ckpt["optimizer_d"])
+        _move_optimizer_state_to_device(optimizer_g, device)
+        _move_optimizer_state_to_device(optimizer_d, device)
         # Override LRs from config (checkpoint state dict overwrites them otherwise)
         for pg in optimizer_g.param_groups:
             pg["lr"] = config.training.base_lr
@@ -208,9 +277,72 @@ def main():
             pg["lr"] = config.training.disc_lr
         start_epoch = ckpt["epoch"]
         best_loss = ckpt.get("best_loss", float("inf"))
+        progress = ckpt.get("progress")
+        if ckpt.get("schedule_unit") == "optimizer_update":
+            if ckpt.get("scheduler_g") is not None:
+                scheduler_g.load_state_dict(ckpt["scheduler_g"])
+            if ckpt.get("scheduler_d") is not None:
+                scheduler_d.load_state_dict(ckpt["scheduler_d"])
+        elif not args.allow_schedule_migration:
+            raise RuntimeError(
+                "Legacy VQGAN checkpoint schedules were epoch-based and have no "
+                "optimizer-update contract. Re-run with --allow_schedule_migration "
+                "only after accepting the recorded schedule migration."
+            )
+        else:
+            completed_g = int(
+                (progress or {}).get(
+                    "optimizer_updates", start_epoch * len(train_loader)
+                )
+            )
+            active_d_epochs = sum(
+                1
+                for epoch in range(start_epoch)
+                if (
+                    config.losses.adv_weight > 0
+                    and (
+                        epoch >= config.losses.adv_warmup
+                        or epoch > 0
+                    )
+                )
+            )
+            completed_d = int(
+                (progress or {}).get(
+                    "discriminator_updates", active_d_epochs * len(train_loader)
+                )
+            )
+            scheduler_g.last_epoch = completed_g
+            scheduler_g._step_count = completed_g + 1
+            scheduler_d.last_epoch = completed_d
+            scheduler_d._step_count = completed_d + 1
+            ckpt["progress"] = {
+                **(progress or {}),
+                "optimizer_updates": completed_g,
+                "discriminator_updates": completed_d,
+                "global_step": completed_g,
+            }
+            resume_overrides.append({
+                "migration": "vqgan_lr_schedule_to_optimizer_updates",
+                "generator_updates": completed_g,
+                "discriminator_updates": completed_d,
+                "override": "--allow_schedule_migration",
+            })
 
         if world_size > 1:
             dist.barrier()
+
+    saved_schedule = (ckpt or {}).get("schedule_contract")
+    if saved_schedule is not None and canonical_hash(saved_schedule) != canonical_hash(schedule_contract):
+        if not args.allow_checkpoint_mismatch:
+            raise CheckpointError(
+                "Checkpoint optimizer-update schedule contract does not match the current run."
+            )
+        resume_overrides.append({
+            "field": "schedule_contract",
+            "checkpoint": saved_schedule,
+            "current": schedule_contract,
+            "override": "--allow_checkpoint_mismatch",
+        })
 
     # -----------------------
     # Trainer
@@ -234,7 +366,32 @@ def main():
         start_epoch=start_epoch,
         best_loss=best_loss,
         wandb_run=wandb_run,
+        checkpoint=ckpt,
+        resume_overrides=resume_overrides,
+        resolved_config=resolved_config,
+        provenance=provenance,
+        run_id=run_name,
+        schedule_contract=schedule_contract,
     )
+
+    if ckpt is not None:
+        if ckpt.get("scaler_g") is not None:
+            trainer.scaler_g.load_state_dict(ckpt["scaler_g"])
+        if ckpt.get("scaler_d") is not None:
+            trainer.scaler_d.load_state_dict(ckpt["scaler_d"])
+
+        rng = ckpt.get("rng")
+        if rng is not None:
+            if "by_rank" in rng:
+                restore_rng_state(rng, rank=rank)
+            else:
+                # Explicit legacy adapter: old Stage-1 checkpoints captured
+                # rank-zero/global CUDA state only and are not exact DDP resumes.
+                torch.set_rng_state(rng["torch"])
+                if torch.cuda.is_available() and rng.get("cuda") is not None:
+                    torch.cuda.set_rng_state_all(rng["cuda"])
+                np.random.set_state(rng["numpy"])
+                random.setstate(rng["python"])
 
     trainer.train()
 

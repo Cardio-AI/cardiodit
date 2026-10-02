@@ -1,0 +1,85 @@
+# Historical temporal-alignment experiment; recompute scale_factor for your data.
+# TempAlign Exp 6 — Pathology-specific descriptor-DTW temporal alignment.
+# Build one canonical template per DISEASE label first:
+#   python src/scripts/build_dtw_template.py --csv train.csv --sidecar_dir data \
+#       --keyframe_dir data/keyframes --metadata_csv data/dataset_information.csv \
+#       --group_by_label --output_dir data/dtw_templates --max_warp_fraction 1.0
+# Encoding then selects templates by subject DISEASE via:
+#   encode_latents.py --temporal_alignment dtw --dtw_template_dir data/dtw_templates \
+#       --metadata_csv data/dataset_information.csv --keyframe_dir data/keyframes
+
+data:
+  latent_dir: ${oc.env:CARDIODIT_RUNS_DIR,${oc.env:HOME}/CardioDiT_runs}/latents/dtw_pathology_hwdt/
+  phase_dir: ~
+  sidecar_dir: data/
+
+model:
+  params:
+    input_size: [12, 32, 32, 8]
+    patch_size: [1, 4, 4, 2]
+    in_channels: 8
+    hidden_size: 768
+    depth: 24
+    num_heads: 16
+    mlp_ratio: 4.0
+    class_dropout_prob: 0.0
+    num_classes: 0
+    learn_sigma: false
+    flash_attention: true
+    attn_drop: 0.1
+    mlp_drop: 0.1
+    spacing: null
+    self_conditioning: false
+    temporal_pe: absolute
+
+scheduler:
+  schedule: "cosine"
+  num_train_timesteps: 1000
+  prediction_type: "v_prediction"
+  zero_terminal_snr: false
+
+training:
+  objective_loss: huber_legacy
+  allow_legacy_latents: true
+  n_epochs: 5000
+  eval_freq: 50
+  batch_size: 2
+  num_workers: 4
+  amp_dtype: bf16
+  scale_factor: 1.0  # TODO: replace after compute_scale_factor.py on pathology-DTW latents.
+  use_ema: true
+  ema_decay: 0.9999
+  ema_warmup_steps: 5000
+  min_snr_gamma: 0.0
+  self_conditioning: false
+  offset_noise_strength: 0.0
+  grad_accum_steps: 6
+  normalize_latents: false
+  latent_stats_path: null
+  use_bucket_sampler: false
+  log_best_artifact: false
+  sample_log:
+    enabled: false
+    every_n_evals: 1
+    n_steps: 100
+    scheduler: ddim
+    eta: 0.0
+    n_samples: 1
+    fps: 8
+    upload_wandb: true
+    local_dir: samples
+    keep_stage1_on_gpu: false
+    stage1_cfg: configs/stage1/vqgan_ds8xy_ds4t.yaml
+    stage1_ckpt: ${oc.env:CARDIODIT_RUNS_DIR,${oc.env:HOME}/CardioDiT_runs}/autoencoder/best_model.pth
+    latent_shape: null
+
+optim:
+  lr: 5.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 100
+  min_lr_ratio: 0.01
+
+wandb:
+  entity: null
+  project: cardiodit-tempalign
+  offline: true

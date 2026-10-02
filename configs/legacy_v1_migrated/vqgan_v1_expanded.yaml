@@ -1,0 +1,64 @@
+# Migrated v1-style VQ-GAN config using the current expanded schema.
+
+model:
+  params:
+    spatial_dims: 3
+    in_channels: 1
+    out_channels: 1
+    num_channels: [128, 256, 256]
+    num_res_channels: [128, 256, 256]
+    num_res_layers: 2
+    downsample_parameters:
+      - [2, 4, 1, 1]
+      - [2, 4, 1, 1]
+      - [2, 4, 1, 1]
+    upsample_parameters:
+      - [2, 4, 1, 1, 0]
+      - [2, 4, 1, 1, 0]
+      - [2, 4, 1, 1, 0]
+    num_embeddings: 4096
+    embedding_dim: 8
+    commitment_cost: 1.0
+    decay: 0.7
+    epsilon: 1e-5
+    dropout: 0.0
+    act: "RELU"
+
+discriminator:
+  params:
+    spatial_dims: 3
+    num_channels: 64
+    num_layers_d: 3
+    in_channels: 1
+    out_channels: 1
+    norm: "INSTANCE"
+
+training:
+  n_epochs: 500
+  eval_freq: 10
+  batch_size: 8
+  num_workers: 8
+  base_lr: 1.2e-4
+  disc_lr: 4.0e-5
+  lr_gamma: 0.999
+  roi_size: [224, 224, 32]
+  target_frames: 32
+  use_persistent: true
+  spatial_permute: null
+
+losses:
+  perceptual_weight: 0.6
+  jukebox_weight: 0.1
+  adv_weight: 0.05
+  adv_warmup: 50
+  params:
+    perceptual_params:
+      spatial_dims: 3
+      network_type: "squeeze"
+    jukebox_params:
+      spatial_dims: 3
+
+wandb:
+  entity: null
+  project: cardiodit-dev
+  offline: true

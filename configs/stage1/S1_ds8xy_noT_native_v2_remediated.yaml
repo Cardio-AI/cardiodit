@@ -1,0 +1,146 @@
+model:
+  params:
+    spatial_dims: 3
+    in_channels: 1
+    out_channels: 1
+    num_channels:
+    - 160
+    - 320
+    - 320
+    num_res_channels:
+    - 160
+    - 320
+    - 320
+    num_res_layers: 3
+    downsample_parameters:
+    - - - 2
+        - 2
+        - 1
+      - - 4
+        - 4
+        - 1
+      - 1
+      - - 1
+        - 1
+        - 0
+    - - - 2
+        - 2
+        - 1
+      - - 4
+        - 4
+        - 1
+      - 1
+      - - 1
+        - 1
+        - 0
+    - - - 2
+        - 2
+        - 1
+      - - 4
+        - 4
+        - 1
+      - 1
+      - - 1
+        - 1
+        - 0
+    upsample_parameters:
+    - - - 2
+        - 2
+        - 1
+      - - 4
+        - 4
+        - 1
+      - 1
+      - - 1
+        - 1
+        - 0
+      - - 0
+        - 0
+        - 0
+    - - - 2
+        - 2
+        - 1
+      - - 4
+        - 4
+        - 1
+      - 1
+      - - 1
+        - 1
+        - 0
+      - - 0
+        - 0
+        - 0
+    - - - 2
+        - 2
+        - 1
+      - - 4
+        - 4
+        - 1
+      - 1
+      - - 1
+        - 1
+        - 0
+      - - 0
+        - 0
+        - 0
+    num_embeddings: 8192
+    embedding_dim: 16
+    commitment_cost: 0.25
+    decay: 0.99
+    epsilon: 1.0e-05
+    ddp_sync: true
+    dead_code_threshold: 0.5
+discriminator:
+  params:
+    spatial_dims: 3
+    num_channels: 64
+    num_layers_d: 3
+    in_channels: 1
+    out_channels: 1
+    norm: INSTANCE
+training:
+  n_epochs: 800
+  eval_freq: 10
+  batch_size: 1
+  num_workers: 8
+  base_lr: 1.0e-05
+  disc_lr: 3.0e-06
+  lr_update_gamma: 0.99999
+  roi_size:
+  - 224
+  - 224
+  - 32
+  target_frames: native
+  time_pad_multiple: null
+  use_persistent: true
+  cache_dir: ${oc.env:CARDIODIT_RUNS_DIR,${oc.env:HOME}/CardioDiT_runs}/cache/S1_ds8xy_noT_native_v2_remediated
+  spatial_permute:
+  - 0
+  - 2
+  - 3
+  - 1
+encoding:
+  target_z: 12
+  quantized: true
+  geometry_policy: require_consistent
+  phase_endpoint: true
+losses:
+  perceptual_weight: 0.2
+  jukebox_weight: 0.2
+  adv_weight: 0.09
+  adv_warmup: 0
+  params:
+    perceptual_params:
+      spatial_dims: 3
+      network_type: squeeze
+    jukebox_params:
+      spatial_dims: 3
+wandb:
+  entity: null
+  project: CardioDiT-Evolution
+  offline: true
+  log_artifacts: false
+run_schema:
+  version: 2
+  run_name: S1_ds8xy_noT_native_v2_remediated
+  legacy_predecessor: S1_ds8xy_noT_native

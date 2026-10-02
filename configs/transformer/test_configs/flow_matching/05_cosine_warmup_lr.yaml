@@ -1,0 +1,57 @@
+# FM ablation step 05 — cosine warmup LR scheduler
+#
+# No config change — see DDPM step 06 for the full explanation.
+# Cosine warmup is already the only LR schedule in train_dit.py.
+# This step is present to keep the ablation sequence symmetric with the 3D codebase.
+
+scheduler_type: "flow_matching"
+
+model:
+  params:
+    input_size: [10, 28, 28, 8]
+    patch_size: [1, 4, 4, 2]
+    in_channels: 8
+    hidden_size: 1024
+    depth: 12
+    num_heads: 16
+    mlp_ratio: 4.0
+    class_dropout_prob: 0.0
+    num_classes: 0
+    learn_sigma: false
+    flash_attention: true
+    attn_drop: 0.0
+    mlp_drop: 0.0
+    spacing: [8.0, 1.5, 1.5, 1.0]
+    self_conditioning: false
+
+scheduler:
+  num_train_timesteps: 1000
+  sample_method: "logit_normal"
+  logit_mean: 0.5
+  logit_std: 0.7
+
+training:
+  n_epochs: 3000
+  eval_freq: 50
+  batch_size: 2
+  num_workers: 8
+  scale_factor: 1.0
+  use_ema: true
+  ema_decay: 0.9999
+  ema_warmup_steps: 5000
+  min_snr_gamma: 0.0
+  self_conditioning: false
+  grad_accum_steps: 4
+  normalize_latents: true
+  latent_stats_path: null
+
+optim:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 100              # linear warmup always enabled in train_dit.py
+  min_lr_ratio: 0.01
+
+wandb:
+  entity: null
+  project: cardiodit-dev
+  offline: true       # set true on cluster nodes without internet

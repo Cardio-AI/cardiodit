@@ -1,126 +1,60 @@
-from __future__ import annotations
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-from collections import namedtuple
-from keyword import iskeyword
-from textwrap import dedent, indent
-from typing import Callable, Dict, Iterable, TypeVar
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
 
-from src.models.utils import unsqueeze_right
-
-T = TypeVar("T")
-
-
-def _is_variable(name):
-    return name.isidentifier() and not iskeyword(name)
-
-
-class ComponentStore:
-    _Component = namedtuple("Component", ("description", "value"))
-
-    def __init__(self, name: str, description: str) -> None:
-        self.components: Dict[str, self._Component] = {}
-        self.name = name
-        self.description = description
-
-    def add(self, name: str, desc: str, value: T) -> T:
-        if not _is_variable(name):
-            raise ValueError("Component name must be a valid Python identifier")
-        self.components[name] = self._Component(desc, value)
-        return value
-
-    def add_def(self, name: str, desc: str) -> Callable:
-        def deco(func):
-            return self.add(name, desc, func)
-
-        return deco
-
-    def __iter__(self) -> Iterable:
-        for key, value in self.components.items():
-            yield key, value.value
-
-    def __str__(self):
-        result = f"Component Store '{self.name}': {self.description}\nAvailable components:"
-        for key, value in self.components.items():
-            result += f"\n* {key}:"
-            if hasattr(value.value, "__doc__"):
-                doc = indent(dedent(value.value.__doc__.lstrip("\n").rstrip()), "    ")
-                result += f"\n{doc}\n"
-            else:
-                result += f" {value.description}"
-        return result
-
-    def __getitem__(self, name: str):
-        if name not in self.components:
-            raise ValueError(f"Component '{name}' not found")
-        return self.components[name].value
-
+from src.models.utils import ComponentStore, unsqueeze_right
 
 NoiseSchedules = ComponentStore("NoiseSchedules", "Functions to generate noise schedules")
 
 
 @NoiseSchedules.add_def("linear_beta", "Linear beta schedule")
-def _linear_beta(
-    num_train_timesteps: int,
-    beta_start: float = 1e-4,
-    beta_end: float = 2e-2,
-):
+def _linear_beta(num_train_timesteps: int, beta_start: float = 1e-4, beta_end: float = 2e-2):
     return torch.linspace(beta_start, beta_end, num_train_timesteps, dtype=torch.float32)
 
 
 @NoiseSchedules.add_def("scaled_linear_beta", "Scaled linear beta schedule")
-def _scaled_linear_beta(
-    num_train_timesteps: int,
-    beta_start: float = 1e-4,
-    beta_end: float = 2e-2,
-):
-    return (
-        torch.linspace(
-            beta_start**0.5,
-            beta_end**0.5,
-            num_train_timesteps,
-            dtype=torch.float32,
-        )
-        ** 2
-    )
+def _scaled_linear_beta(num_train_timesteps: int, beta_start: float = 1e-4, beta_end: float = 2e-2):
+    return torch.linspace(beta_start**0.5, beta_end**0.5, num_train_timesteps, dtype=torch.float32) ** 2
 
 
 @NoiseSchedules.add_def("sigmoid_beta", "Sigmoid beta schedule")
-def _sigmoid_beta(
-    num_train_timesteps: int,
-    beta_start: float = 1e-4,
-    beta_end: float = 2e-2,
-    sig_range: float = 6,
-):
+def _sigmoid_beta(num_train_timesteps: int, beta_start: float = 1e-4, beta_end: float = 2e-2, sig_range: float = 6):
     betas = torch.linspace(-sig_range, sig_range, num_train_timesteps)
     return torch.sigmoid(betas) * (beta_end - beta_start) + beta_start
 
 
-@NoiseSchedules.add_def("cosine", "Cosine beta schedule")
+@NoiseSchedules.add_def("cosine", "Cosine schedule")
 def _cosine_beta(num_train_timesteps: int, s: float = 8e-3):
-    x = torch.linspace(
-        0,
-        num_train_timesteps,
-        num_train_timesteps + 1,
-        dtype=torch.float64,
-    )
-    alphas_cumprod = torch.cos(
-        ((x / num_train_timesteps) + s) / (1 + s) * torch.pi * 0.5
-    ) ** 2
+    x = torch.linspace(0, num_train_timesteps, num_train_timesteps + 1, dtype=torch.float64)
+    alphas_cumprod = torch.cos(((x / num_train_timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return torch.clip(betas, 0, 0.9999).float()
+    betas = torch.clip(betas, 0, 0.9999)
+    return betas
 
 
 class Scheduler(nn.Module):
-    """Base class for beta-schedule diffusion schedulers."""
+    """
+    Base class for schedulers based on a noise schedule function.
+    """
 
     def __init__(
         self,
         num_train_timesteps: int = 1000,
         schedule: str = "linear_beta",
+        zero_terminal_snr: bool = False,
         **schedule_args,
     ) -> None:
         super().__init__()
@@ -134,45 +68,44 @@ class Scheduler(nn.Module):
             self.alphas = 1.0 - self.betas
             self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
 
+        if zero_terminal_snr:
+            # Rescale sqrt(alpha_bar) linearly so that sqrt(alpha_bar[T]) = 0
+            # while sqrt(alpha_bar[0]) is preserved.  Derived from Lin et al. (2023)
+            # "Common Diffusion Noise Schedules and Sample Steps are Flawed".
+            sqrt_acp = self.alphas_cumprod.float().sqrt()
+            sqrt_acp_0 = sqrt_acp[0].clone()
+            sqrt_acp_T = sqrt_acp[-1].clone()
+            # shift-and-scale: maps [sqrt_acp_0, sqrt_acp_T] → [sqrt_acp_0, 0]
+            sqrt_acp = (sqrt_acp - sqrt_acp_T) * (sqrt_acp_0 / (sqrt_acp_0 - sqrt_acp_T))
+            self.alphas_cumprod = sqrt_acp ** 2
+            # Recompute alphas and betas to keep everything consistent.
+            self.alphas = torch.empty_like(self.alphas_cumprod)
+            self.alphas[0] = self.alphas_cumprod[0]
+            self.alphas[1:] = self.alphas_cumprod[1:] / self.alphas_cumprod[:-1]
+            self.betas = 1.0 - self.alphas
+
         self.num_train_timesteps = num_train_timesteps
         self.one = torch.tensor(1.0)
+
         self.num_inference_steps = None
         self.timesteps = torch.arange(num_train_timesteps - 1, -1, -1)
 
-    def add_noise(
-        self,
-        original_samples: torch.Tensor,
-        noise: torch.Tensor,
-        timesteps: torch.Tensor,
-    ) -> torch.Tensor:
-        self.alphas_cumprod = self.alphas_cumprod.to(
-            device=original_samples.device, dtype=original_samples.dtype
-        )
+    def add_noise(self, original_samples: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+        self.alphas_cumprod = self.alphas_cumprod.to(device=original_samples.device, dtype=original_samples.dtype)
         timesteps = timesteps.to(original_samples.device)
 
-        sqrt_alpha_cumprod = unsqueeze_right(
-            self.alphas_cumprod[timesteps] ** 0.5, original_samples.ndim
-        )
-        sqrt_one_minus_alpha_prod = unsqueeze_right(
-            (1 - self.alphas_cumprod[timesteps]) ** 0.5, original_samples.ndim
-        )
-        return sqrt_alpha_cumprod * original_samples + sqrt_one_minus_alpha_prod * noise
+        sqrt_alpha_cumprod = unsqueeze_right(self.alphas_cumprod[timesteps] ** 0.5, original_samples.ndim)
+        sqrt_one_minus_alpha_prod = unsqueeze_right((1 - self.alphas_cumprod[timesteps]) ** 0.5, original_samples.ndim)
 
-    def get_velocity(
-        self,
-        sample: torch.Tensor,
-        noise: torch.Tensor,
-        timesteps: torch.Tensor,
-    ) -> torch.Tensor:
-        self.alphas_cumprod = self.alphas_cumprod.to(
-            device=sample.device, dtype=sample.dtype
-        )
+        noisy_samples = sqrt_alpha_cumprod * original_samples + sqrt_one_minus_alpha_prod * noise
+        return noisy_samples
+
+    def get_velocity(self, sample: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+        self.alphas_cumprod = self.alphas_cumprod.to(device=sample.device, dtype=sample.dtype)
         timesteps = timesteps.to(sample.device)
 
-        sqrt_alpha_prod = unsqueeze_right(
-            self.alphas_cumprod[timesteps] ** 0.5, sample.ndim
-        )
-        sqrt_one_minus_alpha_prod = unsqueeze_right(
-            (1 - self.alphas_cumprod[timesteps]) ** 0.5, sample.ndim
-        )
-        return sqrt_alpha_prod * noise - sqrt_one_minus_alpha_prod * sample
+        sqrt_alpha_prod = unsqueeze_right(self.alphas_cumprod[timesteps] ** 0.5, sample.ndim)
+        sqrt_one_minus_alpha_prod = unsqueeze_right((1 - self.alphas_cumprod[timesteps]) ** 0.5, sample.ndim)
+
+        velocity = sqrt_alpha_prod * noise - sqrt_one_minus_alpha_prod * sample
+        return velocity

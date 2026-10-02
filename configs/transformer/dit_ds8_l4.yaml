@@ -1,7 +1,15 @@
-dit:
+model:
   params:
-    input_size: [6,64,64,8]
-    patch_size: [1,4,4,2]
+    input_size:
+    - 6
+    - 64
+    - 64
+    - 8
+    patch_size:
+    - 1
+    - 4
+    - 4
+    - 2
     in_channels: 8
     hidden_size: 768
     depth: 16
@@ -11,8 +19,28 @@ dit:
     num_classes: 0
     learn_sigma: false
     flash_attention: true
-
-  scheduler:
-    schedule: "cosine"
-    num_train_timesteps: 300
-    prediction_type: "v_prediction"
+scheduler:
+  schedule: cosine
+  num_train_timesteps: 300
+  prediction_type: v_prediction
+training:
+  n_epochs: 3000
+  eval_freq: 10
+  batch_size: 1
+  num_workers: 8
+  scale_factor: 1.0
+  preload_latents: true
+  use_ema: true
+  ema_decay: 0.9999
+  grad_accum_steps: 1
+  objective_loss: huber_legacy
+  allow_legacy_latents: true
+optim:
+  lr: 0.0001
+  weight_decay: 0.0001
+  warmup_epochs: 100
+  min_lr_ratio: 0.01
+wandb:
+  entity: null
+  project: cardiodit
+  offline: true

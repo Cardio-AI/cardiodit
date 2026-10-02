@@ -1,59 +1,47 @@
-# Outputs (model checkpoints, logs, generated files)
-outputs/
-
-# Data
-/data/
-
-# W&B
-wandb/
-
-# Docs / assets not for repo
-architecture_discussion.md
-cardiodit.pdf
-
-# Data splits
-*.csv
-
-# Python
+# Local environments, Python/tool state and credentials
+.venv/
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.egg-info/
-*.egg
-dist/
-build/
-.eggs/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# ML / large files
-*.pth
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.*
+.idea/
+.vscode/
+.agents/
+.codex/
+# Keep runtime artifacts outside the source checkout.
+/data/
+/outputs/
+/runs/
+/latents/
+/samples/
+/csvs/
+/cache/
+/.cache/
+/logs/
+/wandb/
+/checkpoints/
+/resolved_configs/
+*.csv
+*.tsv
 *.pt
+*.pth
 *.ckpt
-*.bin
 *.safetensors
+*.nii
+*.nii.gz
 *.npy
 *.npz
 *.h5
 *.hdf5
-
-# Env
-.env
-*.env
-.venv/
-venv/
-env/
-
-# IDE / tooling
-.vscode/
-.idea/
-.claude/
-.agents/
-.codex/
-
-# OS
-.DS_Store
-Thumbs.db
+*.log
+*.staging/
+/staging/
+/tests/

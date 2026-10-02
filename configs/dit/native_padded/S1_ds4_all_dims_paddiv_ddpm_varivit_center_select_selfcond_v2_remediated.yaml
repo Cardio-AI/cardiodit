@@ -1,0 +1,85 @@
+model:
+  params:
+    input_size:
+    - 12
+    - 56
+    - 56
+    - 8
+    patch_size:
+    - 1
+    - 8
+    - 8
+    - 1
+    in_channels: 16
+    hidden_size: 768
+    depth: 16
+    num_heads: 12
+    mlp_ratio: 4.0
+    class_dropout_prob: 0.0
+    num_classes: 0
+    learn_sigma: false
+    flash_attention: true
+    attn_drop: 0.0
+    mlp_drop: 0.0
+    spacing: null
+    self_conditioning: true
+    pos_embed_mode: center_select
+    qk_norm: true
+    variable_shape: true
+    max_input_size:
+    - 12
+    - 56
+    - 56
+    - 8
+scheduler:
+  schedule: cosine
+  num_train_timesteps: 1000
+  prediction_type: v_prediction
+  zero_terminal_snr: true
+training:
+  n_epochs: 16000
+  eval_freq: 526
+  target_optimizer_updates: 300000
+  checkpoint_optimizer_updates: 10000
+  batch_size: 2
+  num_workers: 8
+  amp_dtype: bf16
+  scale_factor: 1.0
+  preserve_scale_factor: false
+  use_ema: true
+  ema_decay: 0.9999
+  ema_warmup_steps: 5000
+  min_snr_gamma: 0.0
+  self_conditioning: true
+  offset_noise_strength: 0.1
+  grad_accum_steps: 4
+  normalize_latents: true
+  latent_stats_path: null
+  phase_dir: null
+  alpha_pool: linear
+  batch_strategy: bucket
+  preload_latents: true
+  keep_last_n_checkpoints: -1
+  objective_loss: mse
+  validation_primary_metric: unconditioned
+  allow_legacy_latents: false
+  sample_log:
+    enabled: false
+optim:
+  lr: 0.0001
+  weight_decay: 0.0001
+  warmup_updates: 5000
+  total_updates: 300000
+  min_lr_ratio: 0.01
+wandb:
+  entity: null
+  project: CardioDiT-Evolution
+  offline: true
+  log_artifacts: false
+run_schema:
+  version: 2
+  run_name: S1_ds4_all_dims_paddiv_ddpm_varivit_center_select_selfcond_v2_remediated
+  legacy_predecessor: S1_ds4_all_dims_paddiv_ddpm_varivit_center_select_selfcond
+latent_preprocessing:
+  stage1_family: S1_ds4_all_dims_paddiv_v2_remediated
+  contract_schema_version: 1

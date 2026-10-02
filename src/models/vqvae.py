@@ -54,6 +54,7 @@ class EMAQuantizer(nn.Module):
         decay: float = 0.99,
         epsilon: float = 1e-5,
         ddp_sync: bool = False,
+        dead_code_threshold: float = 0.5,
     ):
         super().__init__()
         assert spatial_dims in [2, 3], "Only 2D or 3D inputs supported"
@@ -66,10 +67,63 @@ class EMAQuantizer(nn.Module):
         self.decay = decay
         self.epsilon = epsilon
         self.ddp_sync = ddp_sync
+        self.dead_code_threshold = float(dead_code_threshold)
+        if self.dead_code_threshold < 0:
+            raise ValueError("dead_code_threshold must be non-negative")
 
-        # EMA buffers
-        self.register_buffer("ema_cluster_size", torch.zeros(num_embeddings))
+        # A count of one is paired with one embedding-weight contribution.
+        # This consistent prior keeps never-selected embeddings bounded on the
+        # first update. Codes whose EMA count later falls below
+        # ``dead_code_threshold`` are replaced with observed encoder vectors.
+        self.register_buffer("ema_cluster_size", torch.ones(num_embeddings))
         self.register_buffer("ema_w", self.embedding.weight.data.clone())
+
+    def _ema_statistics(
+        self,
+        inputs_flat: torch.Tensor,
+        encoding_indices_flat: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute code counts/sums without allocating token-by-code one-hot."""
+        counts = torch.bincount(
+            encoding_indices_flat, minlength=self.num_embeddings
+        ).to(dtype=inputs_flat.dtype)
+        sums = torch.zeros(
+            self.num_embeddings,
+            self.embedding_dim,
+            device=inputs_flat.device,
+            dtype=inputs_flat.dtype,
+        )
+        sums.index_add_(0, encoding_indices_flat, inputs_flat)
+        return counts, sums
+
+    @torch.no_grad()
+    def _replace_dead_codes(self, inputs_flat: torch.Tensor):
+        if self.dead_code_threshold <= 0:
+            return
+        dead = self.ema_cluster_size < self.dead_code_threshold
+        num_dead = int(dead.sum().item())
+        if num_dead == 0 or inputs_flat.shape[0] == 0:
+            return
+
+        # Rank zero chooses deterministic observed vectors; broadcasting keeps
+        # every DDP replica byte-identical without gathering all encoder tokens.
+        replacements = torch.empty(
+            num_dead,
+            self.embedding_dim,
+            device=inputs_flat.device,
+            dtype=inputs_flat.dtype,
+        )
+        is_distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
+        rank = torch.distributed.get_rank() if is_distributed else 0
+        if rank == 0:
+            replacements.copy_(inputs_flat[torch.arange(num_dead, device=inputs_flat.device) % inputs_flat.shape[0]])
+        if is_distributed:
+            torch.distributed.broadcast(replacements, src=0)
+
+        replacement_count = max(self.dead_code_threshold, self.epsilon)
+        self.ema_cluster_size[dead] = replacement_count
+        self.ema_w[dead] = replacements * replacement_count
+        self.embedding.weight.data[dead] = replacements
 
     @torch.autocast(device_type="cuda", enabled=False)
     def forward(self, inputs: torch.Tensor, batch_size: int = 1024) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -78,6 +132,17 @@ class EMAQuantizer(nn.Module):
         returns: quantized [B, C, *spatial_dims], loss, encoding indices
         """
         inputs = inputs.float()
+        if (
+            self.training
+            and torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            and torch.distributed.get_world_size() > 1
+            and not self.ddp_sync
+        ):
+            raise RuntimeError(
+                "EMAQuantizer requires ddp_sync=true under distributed training; "
+                "otherwise ranks update different codebooks."
+            )
         spatial_dims = inputs.shape[2:]
         B = inputs.shape[0]
         inputs_flat = inputs.permute(0, *range(2, inputs.ndim), 1).contiguous().view(-1, self.embedding_dim).float()
@@ -105,9 +170,7 @@ class EMAQuantizer(nn.Module):
         # EMA updates
         if self.training:
             with torch.no_grad():
-                encodings = F.one_hot(encoding_indices_flat, self.num_embeddings).float()
-                encodings_sum = encodings.sum(0)
-                dw = encodings.t() @ inputs_flat
+                encodings_sum, dw = self._ema_statistics(inputs_flat, encoding_indices_flat)
 
                 if self.ddp_sync and torch.distributed.is_initialized():
                     torch.distributed.all_reduce(encodings_sum)
@@ -115,6 +178,8 @@ class EMAQuantizer(nn.Module):
 
                 self.ema_cluster_size.data.mul_(self.decay).add_(encodings_sum, alpha=1 - self.decay)
                 self.ema_w.data.mul_(self.decay).add_(dw, alpha=1 - self.decay)
+
+                self._replace_dead_codes(inputs_flat)
 
                 # Laplace smoothing
                 n = self.ema_cluster_size.sum()
@@ -280,7 +345,8 @@ class VQVAE(nn.Module):
                  num_embeddings=32, embedding_dim=64,
                  commitment_cost=0.25, decay=0.99, epsilon=1e-5,
                  dropout=0.0, act=Act.RELU, output_act=None,
-                 use_checkpointing=False, ddp_sync=False):
+                 use_checkpointing=False, ddp_sync=False,
+                 dead_code_threshold=0.5):
         super().__init__()
         if isinstance(num_res_channels, int):
             num_res_channels = ensure_tuple_rep(num_res_channels, len(num_channels))
@@ -297,7 +363,8 @@ class VQVAE(nn.Module):
             commitment_cost=commitment_cost,
             decay=decay,
             epsilon=epsilon,
-            ddp_sync=ddp_sync
+            ddp_sync=ddp_sync,
+            dead_code_threshold=dead_code_threshold,
         ))
         self.use_checkpointing = use_checkpointing
 
@@ -321,12 +388,13 @@ class VQVAE(nn.Module):
         Returns latent z (before quantization) or e (quantized).
         """
         z = self.encode(x)
-        e, _, _ = self.quantize(z)
         if quantized:
+            e, _, _ = self.quantize(z)
             return e
         return z
 
-    def decode_stage_2_outputs(self, z: torch.Tensor) -> torch.Tensor:
-        e, _, _ = self.quantize(z)
-        image = self.decode(e)
+    def decode_stage_2_outputs(self, z: torch.Tensor, quantize: bool = True) -> torch.Tensor:
+        if quantize:
+            z, _, _ = self.quantize(z)
+        image = self.decode(z)
         return image

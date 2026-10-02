@@ -1,0 +1,80 @@
+# VQ-GAN — asymmetric: 8× spatial (H, W), 4× temporal (T)
+#
+# Three encoder/decoder stages.
+# Stages 1–2: stride 2 on all dims (H, W, T).
+# Stage 3:    stride 2 on H and W only; T preserved.
+#
+# Compression:
+#   H:  224 → 112 → 56 → 28    (8×)
+#   W:  224 → 112 → 56 → 28    (8×)
+#   T:   32 →  16 →  8 →  8    (4×)
+#
+# Latent per 2D+t slice: (8, 28, 28, 8)
+# Full 4D latent (D=10): (8, 10, 28, 28, 8)
+#
+# Asymmetric downsampling rationale: cardiac cine MRI has high temporal
+# resolution requirements (wall motion, valve dynamics). Preserving more
+# temporal resolution at the cost of spatial detail may improve generation
+# fidelity for functional cardiac metrics.
+#
+# Stage 3 asymmetric convolution parameters (list form for MONAI VQVAE):
+#   downsample: [stride, kernel, dilation, padding]
+#     stride  = [2, 2, 1]   — stride 2 on H/W, no stride on T
+#     kernel  = [4, 4, 1]   — 4×4 spatial kernel, point kernel on T
+#     dilation = 1
+#     padding = [1, 1, 0]   — maintain spatial dims; no T padding needed
+#
+#   upsample: [stride, kernel, dilation, padding, output_padding]
+#     stride        = [2, 2, 1]
+#     kernel        = [4, 4, 1]
+#     dilation      = 1
+#     padding       = [1, 1, 0]
+#     output_padding = [0, 0, 0]
+
+model:
+  params:
+    spatial_dims: 3
+    in_channels: 1
+    out_channels: 1
+    num_channels: [128, 256, 256]
+    num_res_channels: [128, 256, 256]
+    num_res_layers: 2
+    downsample_parameters:
+      - [2, 4, 1, 1]                    # stage 1: stride 2 on H, W, T
+      - [2, 4, 1, 1]                    # stage 2: stride 2 on H, W, T
+      - [[2, 2, 1], [4, 4, 1], 1, [1, 1, 0]]   # stage 3: stride 2 on H, W only
+    upsample_parameters:
+      - [[2, 2, 1], [4, 4, 1], 1, [1, 1, 0], [0, 0, 0]]  # reverses stage 3
+      - [2, 4, 1, 1, 0]                 # reverses stage 2
+      - [2, 4, 1, 1, 0]                 # reverses stage 1
+    num_embeddings: 4096
+    embedding_dim: 8
+
+discriminator:
+  params:
+    spatial_dims: 3
+    num_channels: 64
+    num_layers_d: 3
+    in_channels: 1
+    out_channels: 1
+
+training:
+  n_epochs: 500
+  eval_freq: 10
+  batch_size: 4
+  num_workers: 8
+  base_lr: 5.0e-5
+  disc_lr: 5.0e-5
+  lr_gamma: 0.9999
+  roi_size: [224, 224, 32]   # (H, W, T) per 2D+t slice
+  target_frames: 32
+
+losses:
+  perceptual_weight: 0.002
+  adv_weight: 0.005
+  adv_warmup: 50
+
+wandb:
+  entity: null
+  project: cardiodit-dev
+  offline: true       # set true on cluster nodes without internet
